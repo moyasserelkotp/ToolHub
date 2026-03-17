@@ -4,7 +4,9 @@
   <p>Zero-configuration tool bridging for LLM APIs (Gemini, OpenAI, Anthropic, LangChain), featuring secure server-side credential injection, real-time observability, and enterprise multi-tenancy.</p>
 </div>
 
----
+---<img width="1536" height="1024" alt="ChatGPT Image Mar 17, 2026, 05_22_40 PM" src="https://github.com/user-attachments/assets/81764c57-f34b-422d-a77d-2d11a7799816" />
+
+
 
 ## 🎯 What is ToolHub?
 
