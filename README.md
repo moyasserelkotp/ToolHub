@@ -30,7 +30,7 @@ When building AI Agents, connecting to external APIs is hard. You have to write 
 └──────┬───────┴──────────────┴──────┬──────┴────────────────────┘
        │                             │
 ┌──────▼─────────────────────────────▼──────────────────────────┐
-│                      Core Services                              │
+│                      Core Services                            │
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐    │
 │  │  Discovery  │  │  Security   │  │   Observability     │    │
 │  │  (Vectors)  │  │  (AES+JWT)  │  │   (Calls+Audit)     │    │
@@ -39,21 +39,21 @@ When building AI Agents, connecting to external APIs is hard. You have to write 
 │  │  Health     │  │  Webhooks   │  │   Quota Engine      │    │
 │  │  Monitor    │  │  (HMAC)     │  │   (Billing hooks)   │    │
 │  └─────────────┘  └─────────────┘  └─────────────────────┘    │
-└────────────────────────────────────────────────────────────────┘
+└───────────────────────────────────────────────────────────────┘
        │
 ┌──────▼────────────────────────────────────────────────────────┐
-│                   PostgreSQL (+ pgvector)                       │
-│  tools · credentials · tool_calls · webhooks · tool_health     │
-│  tool_embeddings · collections · organizations · audit_log     │
-└────────────────────────────────────────────────────────────────┘
+│                   PostgreSQL (+ pgvector)                     │
+│  tools · credentials · tool_calls · webhooks · tool_health    │
+│  tool_embeddings · collections · organizations · audit_log    │
+└───────────────────────────────────────────────────────────────┘
        ↕ SDK (Python + TypeScript)  ↕ MCP Protocol
 ┌──────────────────────────────────────────────────────────────┐
-│           Agent Ecosystem                                      │
-│  LangChain · OpenAI · Claude (MCP) · Custom agents             │
+│           Agent Ecosystem                                    │
+│  LangChain · OpenAI · Claude (MCP) · Custom agents           │
 └──────────────────────────────────────────────────────────────┘
 ```
 
----
+----- 
 
 ## 🏗️ Project Structure
 
