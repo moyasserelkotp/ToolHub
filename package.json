@@ -1,0 +1,26 @@
+{
+  "name": "toolhub-server",
+  "version": "1.0.0",
+  "description": "ToolHub — AI Tool Registry, Credential Vault & Observability",
+  "main": "server/src/index.js",
+  "scripts": {
+    "start": "node server/src/index.js",
+    "dev": "nodemon server/src/index.js",
+    "migrate": "node server/src/db/migrate.js",
+    "seed": "node server/src/db/seed.js",
+    "test": "node server/src/test/run.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "pg": "^8.11.3",
+    "jsonwebtoken": "^9.0.2",
+    "node-cron": "^3.0.3",
+    "axios": "^1.6.2",
+    "uuid": "^9.0.0",
+    "dotenv": "^16.3.1",
+    "ajv": "^8.12.0",
+    "morgan": "^1.10.0",
+    "express-rate-limit": "^7.1.5"
+  }
+}

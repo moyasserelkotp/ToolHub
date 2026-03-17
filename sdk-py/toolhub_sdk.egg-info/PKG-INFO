@@ -1,0 +1,311 @@
+Metadata-Version: 2.4
+Name: toolhub-sdk
+Version: 1.0.0
+Summary: ToolHub SDK — AI Tool Discovery, Invocation & Credential Injection
+Author: ToolHub
+Classifier: Programming Language :: Python :: 3
+Classifier: License :: OSI Approved :: MIT License
+Requires-Python: >=3.8
+Description-Content-Type: text/markdown
+Requires-Dist: requests>=2.31.0
+Requires-Dist: pyjwt>=2.8.0
+Provides-Extra: langchain
+Requires-Dist: langchain>=0.1.0; extra == "langchain"
+Provides-Extra: openai
+Requires-Dist: openai>=1.0.0; extra == "openai"
+Dynamic: author
+Dynamic: classifier
+Dynamic: description
+Dynamic: description-content-type
+Dynamic: provides-extra
+Dynamic: requires-dist
+Dynamic: requires-python
+Dynamic: summary
+
+# ⚙️ ToolHub
+
+> **AI Tool Registry — Secure, Semantic, Self-healing**
+> Zero config → working agent with 2 tools in 7 lines of code.
+
+ToolHub fixes the three gaps in today's MCP ecosystem:
+
+| Gap | ToolHub solution |
+|-----|-----------------|
+| 41% of tools have no auth | Security scoring — tools below 40/100 are **rejected at registration** |
+| Zero observability | Every call logged — latency, errors, agent ID, 30-day trends |
+| No semantic discovery | Plain-English search via cosine similarity + composite ranking |
+
+---
+
+## Project structure
+
+```
+toolhub/
+├── server/                         Node.js / Express backend
+│   ├── src/
+│   │   ├── db/
+│   │   │   ├── schema.sql          ← single canonical schema (7 tables)
+│   │   │   ├── index.js            pg pool
+│   │   │   ├── migrate.js          npm run migrate
+│   │   │   └── seed.js             npm run seed  (10 tools)
+│   │   ├── routes/
+│   │   │   ├── tools.js            CRUD + /search + /health + /invoke-config
+│   │   │   ├── credentials.js      AES-256-GCM vault
+│   │   │   ├── analytics.js        observability queries
+│   │   │   └── webhooks.js         change notifications
+│   │   ├── services/
+│   │   │   ├── security.js         encrypt/decrypt, score, schema diff, HMAC
+│   │   │   ├── tokens.js           15-min JWT invoke tokens
+│   │   │   ├── embeddings.js       TF-IDF semantic search + in-memory cache
+│   │   │   └── webhooks.js         outbound webhook firing
+│   │   ├── middleware/
+│   │   │   └── analytics.js        auto-log every tool call
+│   │   ├── jobs/
+│   │   │   └── healthMonitor.js    cron every 6h, degradation + restore
+│   │   └── index.js                Express entry point
+│   ├── .env.example
+│   └── package.json
+│
+├── sdk/                            pip install toolhub-sdk
+│   ├── toolhub_sdk/
+│   │   ├── __init__.py
+│   │   ├── models.py               Tool, InvokeResult
+│   │   └── client.py               ToolHub — search, get, list, invoke,
+│   │                               register_credential, as_langchain_tool,
+│   │                               as_openai_function, handle_openai_tool_call
+│   ├── setup.py
+│   └── README.md
+│
+├── dashboard/
+│   └── Dashboard.jsx               React — Overview, Tools, Security, Calls, How To Use
+│
+├── demo/
+│   └── demo_agent.py               quick_demo() / full_demo() / search_test()
+│
+└── README.md                       ← you are here
+```
+
+---
+
+## Quick start
+
+### 1. Server
+
+```bash
+cd server
+
+# Install
+npm install
+
+# Configure (copy and fill in your Postgres credentials + secrets)
+cp .env.example .env
+
+# Init database
+createdb toolhub
+npm run migrate    # creates all 7 tables
+npm run seed       # registers 10 example tools
+
+# Start
+npm start          # → http://localhost:3000
+```
+
+Visit `http://localhost:3000` for the full endpoint reference.
+
+### 2. SDK
+
+```bash
+pip install -e .           # or: pip install toolhub-sdk
+```
+
+```python
+from toolhub_sdk import ToolHub
+
+hub   = ToolHub(base_url="http://localhost:3000")
+tools = hub.search("I need to search the web")
+print(tools)
+# [<Tool 'web_search' [research] security=80/100 score=0.924>]
+
+result = hub.invoke(tools[0].id, {"query": "latest AI news"})
+print(result)
+# ✅ InvokeResult(web_search, 312ms)
+```
+
+### 3. Demo agent
+
+```bash
+cd demo
+python demo_agent.py             # 7-line demo
+python demo_agent.py --full      # full walkthrough
+python demo_agent.py --search-test   # semantic accuracy test
+```
+
+---
+
+## Database schema (7 tables)
+
+```
+tools               id, name, description, category, json_schema, auth_type,
+                    endpoint_url, version, security_score, usage_count, status
+
+tool_versions       id, tool_id, version, schema, changelog, is_active
+
+credentials         id, tool_id, operator_id, encrypted_key, key_hint,
+                    auth_type, is_active, last_used_at
+
+tool_calls          id, tool_id, agent_id, latency_ms, success,
+                    error_type, error_message, timestamp
+
+tool_health         id, tool_id, status, response_ms, error_message,
+                    schema_valid, checked_at
+
+tool_health_summary tool_id (PK), status, uptime_percent, avg_response_ms,
+                    consecutive_fails, last_checked
+
+webhooks            id, tool_id, agent_id, callback_url, events[],
+                    secret, is_active
+```
+
+---
+
+## API reference
+
+### Tools
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/tools` | Register tool (rejected if score < 40) |
+| `GET`  | `/tools` | List — `?category=&auth_type=&sort=&limit=&offset=` |
+| `GET`  | `/tools/:id` | Full details + versions + health |
+| `PUT`  | `/tools/:id` | Update — auto-detects breaking schema changes |
+| `POST` | `/tools/search` | Semantic search `{ "query": "..." }` |
+| `GET`  | `/tools/:id/health` | Uptime %, consecutive fails, last 20 checks |
+| `GET`  | `/tools/:id/invoke-config` | Issue 15-min JWT + resolve credential |
+
+### Credentials
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/credentials` | Store AES-256-GCM encrypted key |
+| `GET`  | `/credentials/:tool_id` | Metadata only — raw key never returned |
+| `DELETE` | `/credentials/:tool_id` | Revoke |
+
+### Webhooks
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/webhooks` | Subscribe to `degraded` / `schema_change` / `restored` |
+| `GET`  | `/webhooks` | List — `?agent_id=` |
+| `DELETE` | `/webhooks/:id` | Deactivate |
+
+### Analytics
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/analytics/overview` | Top 10 tools, live feed, error heatmap, hourly volume |
+| `GET` | `/analytics/tools/:id` | Calls, p95 latency, error rate, daily trend |
+| `GET` | `/analytics/agent/:id` | Per-agent tool usage breakdown |
+
+---
+
+## Security model
+
+### Scoring rubric (0–100)
+
+| Factor | Points |
+|--------|--------|
+| OAuth / OAuth2 | 35 |
+| Bearer token / JWT | 30 |
+| API key | 25 |
+| Basic auth | 10 |
+| JSON schema present | 25 |
+| HTTPS endpoint | 20 |
+| Version > 1.0.0 | 10 |
+| Rate-limit hint in schema | 5 |
+
+**Minimum to register: 40/100.** A tool with no auth and no schema scores 0 and is rejected.
+
+### Credential flow
+
+```
+Agent                   ToolHub                 Tool API
+  │                        │                       │
+  │ GET /invoke-config ──► │                       │
+  │                        │ decrypt AES-256-GCM   │
+  │                        │ sign JWT (15 min) ──► │
+  │ ◄── {invoke_token} ──  │                       │
+  │                        │                       │
+  │ POST tool_endpoint ─── Bearer {token} ────────►│
+  │                        │    (raw key never leaves vault)
+```
+
+### Schema diff
+
+When `PUT /tools/:id` is called with a new `json_schema`:
+
+- **Breaking**: removed properties, new required fields, type changes → webhooks fire
+- **Non-breaking**: added optional properties, description updates → logged only
+
+---
+
+## Semantic search
+
+Composite ranking score:
+
+```
+score = 0.60 × semantic_similarity
+      + 0.20 × (security_score / 100)
+      + 0.20 × log(usage_count + 1) / 15
+```
+
+Local TF-IDF embeddings ship out of the box. Swap in OpenAI for production:
+
+```js
+// services/embeddings.js — replace computeEmbedding():
+const r = await openai.embeddings.create({ model: 'text-embedding-3-small', input: text });
+return r.data[0].embedding;
+```
+
+---
+
+## Health monitoring
+
+- Runs every **6 hours** via cron
+- **3 consecutive failures** → `status = 'degraded'` + webhooks fire
+- Recovery → `status = 'active'` + `restored` webhooks fire
+- Rolling 30-day uptime % tracked per tool
+
+---
+
+## The 7-line demo
+
+```python
+from toolhub_sdk import ToolHub
+
+hub   = ToolHub(api_key="demo-key")
+web   = hub.search("web search")[0]
+email = hub.search("send email")[0]
+
+news = hub.invoke(web.id,   {"query": "latest AI news"})
+sent = hub.invoke(email.id, {"to": "you@example.com", "body": str(news.data)})
+
+# ✅ 7 lines. Zero config. Credentials injected. Calls logged. Never saw a key.
+```
+
+---
+
+## 10 seeded tools
+
+| Tool | Category | Auth | Score |
+|------|----------|------|-------|
+| web_search | research | api_key | 70 |
+| code_execution | development | bearer_token | 75 |
+| weather | data | api_key | 70 |
+| github | development | oauth | 80 |
+| slack | communication | oauth | 80 |
+| email | communication | api_key | 70 |
+| database_query | data | api_key | 70 |
+| image_generation | media | api_key | 70 |
+| translation | language | api_key | 70 |
+| file_storage | storage | api_key | 70 |
+
+*All above the 40-point minimum.*
