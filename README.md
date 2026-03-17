@@ -22,8 +22,8 @@ When building AI Agents, connecting to external APIs is hard. You have to write 
 **No plaintext API keys. No writing custom fetch requests. Total observability.**
 
 ```text
-┌─────────────────────────────────────────────────────────────────┐
-│                        ToolHub v2.0                             │
+┌────────────────────────────────────────────────────────────────┐
+│                        ToolHub v2.0                            │
 ├──────────────┬──────────────┬─────────────┬────────────────────┤
 │  REST API    │  MCP Bridge  │  WebSocket  │   CLI (npm -g)     │
 │  (Express)   │  Adapter     │  Push Feed  │   toolhub-cli      │
