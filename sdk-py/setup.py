@@ -16,7 +16,8 @@ setup(
     packages=find_packages(),
     install_requires=["requests>=2.31.0", "pyjwt>=2.8.0"],
     extras_require={
-        "langchain": ["langchain>=0.1.0"],
+        "langchain": ["langchain>=0.2.0"],
+        "llama":     ["llama-index-core>=0.10.0"],
         "openai":    ["openai>=1.0.0"],
     },
     classifiers=[

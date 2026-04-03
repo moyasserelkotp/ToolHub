@@ -3,6 +3,10 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
 import { ToolHub } from 'sdk';
+import axios from 'axios';
+import inquirer from 'inquirer';
+import ora from 'ora';
+import { io } from 'socket.io-client';
 const Table = require('cli-table3');
 
 const program = new Command();
@@ -72,6 +76,74 @@ program
     } catch (err: any) {
       console.error(chalk.red('\n❌ Failed to get tool info:'), err.message);
     }
+  });
+
+program
+  .command('register')
+  .description('Import tools from an OpenAPI spec')
+  .requiredOption('--url <url>', 'URL to the OpenAPI specification')
+  .action(async (options) => {
+    const opts = program.opts();
+    const serverUrl = opts.url || process.env.TOOLHUB_URL || 'http://localhost:3000';
+    const specUrl = options.url;
+    
+    const { confirm } = await inquirer.prompt([
+      {
+        type: 'confirm',
+        name: 'confirm',
+        message: `This will fetch ${specUrl} and register all endpoints as AI tools. Proceed?`,
+        default: true
+      }
+    ]);
+    
+    if (!confirm) {
+      console.log(chalk.dim('Operation cancelled by user.'));
+      return;
+    }
+
+    const spinner = ora('Analyzing spec & registering tools...').start();
+    try {
+      const res = await axios.post(`${serverUrl}/tools/import-openapi`, { spec_url: specUrl }, { headers: { 'Authorization': `Bearer ${opts.token}` } });
+      spinner.succeed('Import process completed!');
+      
+      console.log(chalk.green(`\n✅ Successfully arrayed ${res.data.imported || 0} tools.`));
+      if (res.data.skipped > 0) {
+        console.log(chalk.yellow(`⚠️  Skipped ${res.data.skipped} tools (duplicates or low security score).`));
+      }
+    } catch (err: any) {
+      spinner.fail('Failed to process OpenAPI spec');
+      console.error(chalk.red(err.response?.data?.error || err.message));
+    }
+  });
+
+program
+  .command('logs')
+  .description('Stream real-time invocation logs from ToolHub')
+  .option('--tail', 'Tail the live feed indefinitely', false)
+  .action((options) => {
+    const opts = program.opts();
+    const serverUrl = opts.url || process.env.TOOLHUB_URL || 'http://localhost:3000';
+    
+    console.log(chalk.blue(`\n📡 Connecting to live log stream at ${serverUrl}...`));
+    const socket = io(serverUrl);
+    
+    socket.on('connect', () => {
+      console.log(chalk.green('✅ Connected. Waiting for tool invocations...\n'));
+    });
+    
+    socket.on('live_call', (data) => {
+      const statusStr = data.success ? chalk.bgGreen.black(' OK ') : chalk.bgRed.white(' ERR ');
+      const latencyStr = `[${data.latency_ms}ms]`;
+      console.log(`${chalk.dim(new Date(data.timestamp).toLocaleTimeString())}  ${statusStr}  ${chalk.cyan(latencyStr.padEnd(8))}  ${chalk.bold(data.tool_name)}  ${chalk.dim('by')} ${data.agent_id}`);
+    });
+    
+    socket.on('tool_registered', (data) => {
+      console.log(`${chalk.bgBlue.white(' NEW ')}  ${chalk.bold(data.name)}  ${chalk.dim('in cat:')} ${data.category}`);
+    });
+
+    socket.on('disconnect', () => {
+      console.log(chalk.yellow('\n⚠️  Disconnected from server. Retrying...'));
+    });
   });
 
 program.parse(process.argv);

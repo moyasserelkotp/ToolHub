@@ -7,6 +7,9 @@ const { generateInvokeToken, TOKEN_TTL } = require('../services/tokens');
 const { decrypt } = require('../services/security');
 const { fireWebhooks } = require('../services/webhooks');
 const { checkQuota } = require('../middleware/quota');
+const { invokeInternalTool } = require('../services/internalTools');
+const { invokeRateLimiter } = require('../middleware/rateLimiter');
+const { generateToolSchema, auditToolSchema } = require('../services/aiService');
 const axios = require('axios');
 
 // ── POST /tools/search  (must come before /:id) ───────────────────────────────
@@ -19,6 +22,32 @@ router.post('/search', async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Search failed' });
+  }
+});
+
+// ── POST /tools/generate ─────────────────────────────────────────────────────
+router.post('/generate', async (req, res) => {
+  const { prompt } = req.body;
+  if (!prompt) return res.status(400).json({ error: 'prompt is required' });
+  try {
+    const tool = await generateToolSchema(prompt);
+    res.json(tool);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'AI generation failed' });
+  }
+});
+
+// ── POST /tools/audit ────────────────────────────────────────────────────────
+router.post('/audit', async (req, res) => {
+  const { name, json_schema } = req.body;
+  if (!name || !json_schema) return res.status(400).json({ error: 'name and json_schema are required' });
+  try {
+    const audit = await auditToolSchema(name, json_schema);
+    res.json(audit);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'AI audit failed' });
   }
 });
 
@@ -43,13 +72,21 @@ router.post('/', async (req, res) => {
   }
 
   try {
+    // Perform AI Audit
+    const aiAudit = await auditToolSchema(name, json_schema || {});
+    const finalScore = Math.floor((score + aiAudit.security_score) / 2);
+
     const { rows } = await db.query(
       `INSERT INTO tools (name, description, category, json_schema, auth_type, endpoint_url, version, security_score, org_id, is_public)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
       [name, description, category, JSON.stringify(json_schema || {}),
-       auth_type || 'none', endpoint_url, version || '1.0.0', score, org_id || null, is_public !== undefined ? is_public : true]
+       auth_type || 'none', endpoint_url, version || '1.0.0', finalScore, org_id || null, is_public !== undefined ? is_public : true]
     );
     const tool = rows[0];
+
+    // Initial audit record (optional, could add an audit_log entry here)
+    await db.query(`INSERT INTO tool_audit_logs (tool_id, action, details) VALUES ($1, $2, $3)`, 
+      [tool.id, 'ai_security_audit', JSON.stringify(aiAudit)]);
 
     // Bootstrap health summary row
     await db.query(
@@ -74,7 +111,7 @@ router.post('/', async (req, res) => {
       created_at: tool.created_at
     });
 
-    res.status(201).json({ tool, security_score: score });
+    res.status(201).json({ tool, security_score: finalScore, ai_audit: aiAudit });
   } catch (err) {
     if (err.code === '23505') return res.status(409).json({ error: `Tool '${name}' already exists` });
     console.error(err);
@@ -132,6 +169,51 @@ router.get('/:id/related', async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to fetch related tools' });
+  }
+});
+
+// ── GET /tools/calls/pending ──────────────────────────────────────────────────
+router.get('/calls/pending', async (req, res) => {
+  try {
+    const { rows } = await db.query(
+      `SELECT c.id, c.tool_id, c.agent_id, c.payload, c.timestamp, t.name as tool_name 
+       FROM tool_calls c JOIN tools t ON c.tool_id = t.id 
+       WHERE c.approval_status = 'pending' ORDER BY c.timestamp DESC LIMIT 50`
+    );
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── GET /tools/calls/:call_id/status ─────────────────────────────────────────
+router.get('/calls/:call_id/status', async (req, res) => {
+  try {
+    const { rows } = await db.query(`SELECT approval_status FROM tool_calls WHERE id = $1`, [req.params.call_id]);
+    if (!rows[0]) return res.status(404).json({ error: 'Call not found' });
+    res.json({ status: rows[0].approval_status });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── POST /tools/calls/:call_id/approve ───────────────────────────────────────
+router.post('/calls/:call_id/approve', async (req, res) => {
+  try {
+    await db.query(`UPDATE tool_calls SET approval_status = 'approved' WHERE id = $1`, [req.params.call_id]);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── POST /tools/calls/:call_id/reject ────────────────────────────────────────
+router.post('/calls/:call_id/reject', async (req, res) => {
+  try {
+    await db.query(`UPDATE tool_calls SET approval_status = 'rejected' WHERE id = $1`, [req.params.call_id]);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -264,9 +346,6 @@ router.get('/:id/invoke-config', async (req, res) => {
       json_schema:  toolRows[0].json_schema,
       invoke_token: token,
       expires_in:   TOKEN_TTL,
-      // NOTE: raw_key returned for agent convenience — in production route through a proxy
-      // so agents never touch keys. Set PROXY_MODE=true to omit this field.
-      ...(process.env.PROXY_MODE !== 'true' && { api_key: rawKey }),
     });
   } catch (err) {
     console.error(err);
@@ -275,20 +354,57 @@ router.get('/:id/invoke-config', async (req, res) => {
 });
 
 // ── POST /tools/:id/invoke ──────────────────────────────────────────────────
-router.post('/:id/invoke', checkQuota, async (req, res) => {
+router.post('/:id/invoke', invokeRateLimiter, checkQuota, async (req, res) => {
   const operatorId = req.headers['x-operator-id'] || 'default';
   const agentId    = req.headers['x-agent-id']    || 'unknown';
+  const bypassCallId = req.headers['x-toolhub-bypass-approval'];
   const payload    = req.body;
   const startTime  = Date.now();
 
   try {
     // 1. Fetch tool config
     const { rows: toolRows } = await db.query(
-      `SELECT id, name, auth_type, endpoint_url, json_schema, org_id FROM tools WHERE id = $1 AND status = 'active'`,
+      `SELECT id, name, auth_type, endpoint_url, json_schema, org_id, requires_approval FROM tools WHERE id = $1 AND status = 'active'`,
       [req.params.id]
     );
     if (!toolRows[0]) return res.status(404).json({ error: 'Tool not found or not active' });
     const tool = toolRows[0];
+
+    // ── HUMAN IN THE LOOP INTERCEPTION ──
+    if (tool.requires_approval) {
+      if (!bypassCallId) {
+        // Create a pending call
+        const { rows: callRows } = await db.query(
+          `INSERT INTO tool_calls (tool_id, agent_id, success, approval_status, payload)
+           VALUES ($1, $2, false, 'pending', $3) RETURNING id`,
+          [tool.id, agentId, JSON.stringify(payload)]
+        );
+        const callId = callRows[0].id;
+        
+        req.app.get('io').emit('approval_requested', {
+          id: callId,
+          tool_id: tool.id,
+          tool_name: tool.name,
+          agent_id: agentId,
+          payload,
+          timestamp: new Date()
+        });
+        
+        return res.status(202).json({
+          status: 'pending_approval',
+          call_id: callId,
+          message: 'Execution paused for Human Approval.'
+        });
+      } else {
+        // Verify bypass token is actually approved
+        const { rows: verifyRows } = await db.query(
+          `SELECT approval_status FROM tool_calls WHERE id = $1`, [bypassCallId]
+        );
+        if (!verifyRows[0] || verifyRows[0].approval_status !== 'approved') {
+          return res.status(403).json({ error: 'Approval denied or pending.' });
+        }
+      }
+    }
 
     // 2. Fetch & decrypt credentials
     const { rows: credRows } = await db.query(
@@ -309,9 +425,9 @@ router.post('/:id/invoke', checkQuota, async (req, res) => {
     let errorType = null;
     let errorMessage = null;
 
-    if (!tool.endpoint_url) {
-      // Stub mode
-      response = { data: { message: `Stub response for ${tool.name}`, params: payload } };
+    if (!tool.endpoint_url || tool.name === 'web_search') {
+      const result = await invokeInternalTool(tool.name, payload);
+      response = { data: result };
     } else {
       try {
         response = await axios.post(tool.endpoint_url, payload, { headers, timeout: 10000 });
@@ -325,20 +441,25 @@ router.post('/:id/invoke', checkQuota, async (req, res) => {
 
     const latency = Date.now() - startTime;
 
-    // 4. Record the call (Observability)
-    await db.query(
-       `INSERT INTO tool_calls (tool_id, agent_id, latency_ms, success, error_type, error_message)
-        VALUES ($1,$2,$3,$4,$5,$6)`,
-       [tool.id, agentId, latency, success, errorType, errorMessage]
-    );
+    // 4. Record the call (Observability) - update existing call if bypass, else insert new
+    if (bypassCallId) {
+      await db.query(
+        `UPDATE tool_calls SET latency_ms = $1, success = $2, error_type = $3, error_message = $4 WHERE id = $5`,
+        [latency, success, errorType, errorMessage, bypassCallId]
+      );
+    } else {
+      await db.query(
+         `INSERT INTO tool_calls (tool_id, agent_id, latency_ms, success, error_type, error_message)
+          VALUES ($1,$2,$3,$4,$5,$6)`,
+         [tool.id, agentId, latency, success, errorType, errorMessage]
+      );
+    }
 
-    // Increment usage count & quota
     await db.query(`UPDATE tools SET usage_count = usage_count + 1 WHERE id = $1`, [tool.id]);
     if (tool.org_id) {
       await db.query(`UPDATE org_quotas SET calls_used = calls_used + 1 WHERE org_id = $1`, [tool.org_id]);
     }
 
-    // Process real-time event
     req.app.get('io').emit('live_call', {
       tool_id: tool.id,
       tool_name: tool.name,
@@ -354,6 +475,68 @@ router.post('/:id/invoke', checkQuota, async (req, res) => {
   } catch (err) {
     console.error(`Tool invoke failed:`, err);
     res.status(500).json({ error: 'Tool invocation failed', message: err.message });
+  }
+});
+
+
+
+// ── POST /tools/:id/invoke-stream ───────────────────────────────────────────
+router.post('/:id/invoke-stream', invokeRateLimiter, checkQuota, async (req, res) => {
+  const operatorId = req.headers['x-operator-id'] || 'default';
+  const agentId    = req.headers['x-agent-id']    || 'unknown';
+  const payload    = req.body;
+  const startTime  = Date.now();
+
+  try {
+    const { rows: toolRows } = await db.query(
+      `SELECT id, name, auth_type, endpoint_url, json_schema, org_id FROM tools WHERE id = $1 AND status = 'active'`,
+      [req.params.id]
+    );
+    if (!toolRows[0]) return res.status(404).json({ error: 'Tool not found or not active' });
+    const tool = toolRows[0];
+
+    if (!tool.endpoint_url) {
+      return res.status(400).json({ error: 'Streaming not supported for internal tools' });
+    }
+
+    const { rows: credRows } = await db.query(
+      `SELECT encrypted_key FROM credentials WHERE tool_id = $1 AND operator_id = $2 AND is_active = true`,
+      [tool.id, operatorId]
+    );
+
+    const headers = { 'Content-Type': 'application/json', 'X-ToolHub-Agent': agentId };
+    if (credRows[0]) {
+      const rawKey = decrypt(credRows[0].encrypted_key);
+      if (tool.auth_type === 'api_key') headers['X-API-Key'] = rawKey;
+      else if (tool.auth_type === 'bearer_token') headers['Authorization'] = `Bearer ${rawKey}`;
+    }
+
+    const response = await axios({
+      method: 'post',
+      url: tool.endpoint_url,
+      data: payload,
+      headers,
+      responseType: 'stream'
+    });
+
+    res.setHeader('Content-Type', 'text/event-stream');
+    response.data.pipe(res);
+
+    response.data.on('end', () => {
+      const latency = Date.now() - startTime;
+      db.query(
+         `INSERT INTO tool_calls (tool_id, agent_id, latency_ms, success) VALUES ($1,$2,$3,true)`,
+         [tool.id, agentId, latency]
+      );
+      db.query(`UPDATE tools SET usage_count = usage_count + 1 WHERE id = $1`, [tool.id]);
+    });
+
+  } catch (err) {
+    if (err.response && err.response.data && err.response.data.pipe) {
+      err.response.data.pipe(res);
+    } else {
+      res.status(500).json({ error: 'Streaming invoke failed', message: err.message });
+    }
   }
 });
 

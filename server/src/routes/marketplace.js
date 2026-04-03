@@ -1,6 +1,7 @@
 const express = require('express');
 const router  = express.Router();
 const db      = require('../db');
+const { requireAuth } = require('../middleware/auth');
 
 // ── GET /marketplace/tools ───────────────────────────────────────────────────
 // Discover public tools across all organizations
@@ -55,6 +56,64 @@ router.get('/trending', async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to fetch trending tools' });
+  }
+});
+
+// ── GET /categories ────────────────────────────────────────────────────────
+router.get('/categories', async (req, res) => {
+  try {
+    const { rows } = await db.query(
+      `SELECT category, COUNT(*) as count 
+       FROM tools 
+       WHERE status = 'active' AND is_public = true 
+       GROUP BY category 
+       ORDER BY count DESC`
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to fetch categories' });
+  }
+});
+
+// ── GET /tools/:id/ratings ───────────────────────────────────────────────────
+router.get('/tools/:id/ratings', async (req, res) => {
+  try {
+    const { rows } = await db.query(
+      `SELECT r.rating, r.review, r.created_at, u.username
+       FROM tool_ratings r
+       JOIN users u ON r.user_id = u.id
+       WHERE r.tool_id = $1
+       ORDER BY r.created_at DESC`,
+      [req.params.id]
+    );
+    const avg = rows.length > 0 ? rows.reduce((s, r) => s + r.rating, 0) / rows.length : 0;
+    res.json({ average: avg.toFixed(1), total: rows.length, reviews: rows });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to fetch ratings' });
+  }
+});
+
+// ── POST /tools/:id/rate ─────────────────────────────────────────────────────
+router.post('/tools/:id/rate', requireAuth, async (req, res) => {
+  const { rating, review } = req.body;
+  if (!rating || rating < 1 || rating > 5) {
+    return res.status(400).json({ error: 'rating between 1 and 5 is required' });
+  }
+
+  try {
+    await db.query(
+      `INSERT INTO tool_ratings (tool_id, user_id, rating, review)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (tool_id, user_id) 
+       DO UPDATE SET rating = $3, review = $4, created_at = NOW()`,
+      [req.params.id, req.user.id, rating, review]
+    );
+    res.json({ success: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to submit rating' });
   }
 });
 

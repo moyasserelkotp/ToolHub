@@ -6,6 +6,7 @@ const { CallToolRequestSchema, ErrorCode, ListToolsRequestSchema, McpError } = r
 const db = require('../db');
 const axios = require('axios');
 const { decrypt } = require('../services/security');
+const { invokeInternalTool } = require('../services/internalTools');
 
 // MCP Server initialization
 const mcpServer = new Server({ name: 'toolhub-mcp', version: '2.0.0' }, { capabilities: { tools: {} } });
@@ -58,7 +59,8 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
 
     if (!tool.endpoint_url) {
-      return { content: [{ type: 'text', text: `Stub response for ${name}` }] };
+      const result = await invokeInternalTool(tool.name, args);
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
     }
 
     const { data } = await axios.post(tool.endpoint_url, args, { headers, timeout: 10000 });

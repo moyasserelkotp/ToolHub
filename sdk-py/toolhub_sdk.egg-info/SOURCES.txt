@@ -1,6 +1,7 @@
 README.md
 setup.py
 toolhub_sdk/__init__.py
+toolhub_sdk/adapters.py
 toolhub_sdk/client.py
 toolhub_sdk/models.py
 toolhub_sdk.egg-info/PKG-INFO

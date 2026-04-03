@@ -1,0 +1,52 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:15-alpine
+    container_name: toolhub-db
+    environment:
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+      POSTGRES_DB: ${DB_NAME:-toolhub}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./server/src/db/schema.sql:/docker-entrypoint-initdb.d/schema.sql
+
+  redis:
+    image: redis:7-alpine
+    container_name: toolhub-redis
+    ports:
+      - "6379:6379"
+
+  server:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    container_name: toolhub-server
+    environment:
+      DATABASE_URL: postgres://${DB_USER:-postgres}:${DB_PASSWORD:-postgres}@db:5432/${DB_NAME:-toolhub}
+      REDIS_URL: redis://redis:6379
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      JWT_SECRET: ${JWT_SECRET:-super-secret-toolhub}
+    ports:
+      - "3000:3000"
+    depends_on:
+      - db
+      - redis
+
+  dashboard:
+    build:
+      context: ./toolhub-dashboard
+      dockerfile: Dockerfile
+    container_name: toolhub-dashboard
+    environment:
+      VITE_API_URL: http://localhost:3000
+    ports:
+      - "80:80"
+    depends_on:
+      - server
+
+volumes:
+  pgdata:

@@ -16,11 +16,15 @@
   "type": "commonjs",
   "dependencies": {
     "@types/node": "^25.5.0",
+    "axios": "^1.13.6",
     "chalk": "^5.6.2",
     "chalk-table": "^1.0.2",
     "cli-table3": "^0.6.5",
     "commander": "^14.0.3",
+    "inquirer": "^13.3.2",
+    "ora": "^9.3.0",
     "sdk": "file:../sdk-js",
+    "socket.io-client": "^4.8.3",
     "ts-node": "^10.9.2",
     "typescript": "^5.9.3"
   },

@@ -1,60 +1,99 @@
-import os
-import json
+import os, json, requests
 from google import genai
 from google.genai import types
 from toolhub_sdk import ToolHub
 
-# Connect to ToolHub using the local SDK
-hub = ToolHub(base_url="http://localhost:3000", agent_id="gemini-math-agent")
+# Configuration
+TOOLHUB_URL = os.getenv("TOOLHUB_URL", "http://localhost:3000")
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 
-print("\n🤖 Connecting to ToolHub...")
-
-print("\n🔍 Fetching the math tool from the registry...")
-tools = hub.list()
-math_tool = next((t for t in tools if t.name == "math_evaluator"), None)
-
-if not math_tool:
-    print("❌ Could not find math_evaluator in ToolHub.")
+if not GOOGLE_API_KEY:
+    print("❌ GOOGLE_API_KEY environment variable is missing.")
     exit(1)
-print(f"✅ Found Tool: {math_tool.name}")
-print(f"   Description: {math_tool.description}")
-print(f"   Endpoint:    {math_tool.endpoint_url}")
 
-# 2. Format the tool for Gemini using our native SDK method
-gemini_func = types.FunctionDeclaration(**hub.as_gemini_function(math_tool.id))
+# ── 1. Auth & Connection ──────────────────────────────────────────────────────
+requests.post(f"{TOOLHUB_URL}/auth/register", json={"username": "agent", "password": "password123"})
+token_res = requests.post(f"{TOOLHUB_URL}/auth/token", json={"username": "agent", "password": "password123"})
+jwt = token_res.json().get("token")
 
-# A complex problem that LLMs struggle with natively but can solve using a calculator tool
-prompt = "What is the exact result of 15.34 * 4.22 + sin(45 deg) ? Please use the math_evaluator tool to calculate it exactly."
-print(f"\n🧠 Sending prompt to Gemini: '{prompt}'")
+hub = ToolHub(base_url=TOOLHUB_URL, token=jwt, agent_id="gemini-semantic-agent")
+print("✅ Connected to ToolHub")
 
-client = genai.Client()
+# ── 2. Discover Relevant Tools ───────────────────────────────────────────────
+user_prompt = input("\nAI Agent Prompt: ")
+print(f"🔍 Searching ToolHub for relevant tools...")
+
+tools = hub.search(user_prompt, limit=5)
+functions = [hub.as_gemini_function(t.id) for t in tools]
+
+if functions:
+    print(f"Found {len(functions)} tools: " + ", ".join([f['name'] for f in functions]))
+
+# ── 3. Configure Gemini ──────────────────────────────────────────────────────
+client = genai.Client(api_key=GOOGLE_API_KEY)
+
+# System instruction: guide Gemini to prefer wiki_search for Wikipedia queries
+SYSTEM_INSTRUCTION = (
+    "You are a helpful assistant with access to tools. "
+    "When the user asks about searching Wikipedia or looking up information, "
+    "always prefer 'wiki_search' over 'web_search'. "
+    "Use 'web_search' only when 'wiki_search' is not available."
+)
+
+# ── 4. Generate & Invoke ─────────────────────────────────────────────────────
+print(f"🚀 Sending request to Gemini (google-genai)...")
 
 try:
     response = client.models.generate_content(
-        model='gemini-2.5-flash',
-        contents=prompt,
+        model="gemini-2.5-flash",
+        contents=user_prompt,
         config=types.GenerateContentConfig(
-            tools=[types.Tool(function_declarations=[gemini_func])]
+            system_instruction=SYSTEM_INSTRUCTION,
+            tools=[types.Tool(function_declarations=[
+                types.FunctionDeclaration(**f) for f in functions
+            ])] if functions else None
         )
     )
 
-    if response.function_calls:
-        for tool_call in response.function_calls:
-            print(f"\n⚡ Gemini decided to invoke: {tool_call.name}")
-            print(f"   With arguments: {dict(tool_call.args)}")
-            
-            # 3. Securely handle the Gemini tool call using ToolHub
-            # ToolHub proxies this out to the real Math.js API over the network!
-            result_json_str = hub.handle_gemini_tool_call(tool_call)
-            
-            result_data = json.loads(result_json_str)
+    if not response.candidates:
+        print("No response from Gemini.")
+        exit(0)
 
-            print("\n✅ Real ToolHub Execution Result (from Math.js API):")
-            print(json.dumps(result_data, indent=2))
+    candidate = response.candidates[0]
+
+    for part in candidate.content.parts:
+        if part.function_call:
+            fn = part.function_call
+
+            # ── Fallback: redirect web_search → wiki_search ──────────────────
+            # web_search has no live endpoint; wiki_search is the real handler.
+            if fn.name == "web_search":
+                print(f"\n⚡ Gemini chose web_search — redirecting to wiki_search...")
+                # Rebuild the call object with the correct tool name
+                class _Redirect:
+                    name = "wiki_search"
+                    args = dict(fn.args)
+                fn = _Redirect()
             
-    else:
-        print("\nGemini didn't return a tool call.")
-        print(response.text)
+            print(f"\n⚡ Invoking: {fn.name}")
+            print(f"   Args: {fn.args}")
+
+            result_json = hub.handle_gemini_tool_call(fn)
+            result_data = json.loads(result_json)
+
+            if "error" in result_data:
+                print(f"\n❌ Tool Error: {result_data['error']}")
+            else:
+                print(f"\n✅ ToolHub Execution Result:")
+                print(json.dumps(result_data, indent=2))
+
+        elif part.text:
+            print(f"\n🤖 Gemini Summary:\n{part.text}")
 
 except Exception as e:
-    print(f"\n❌ Error calling Gemini: {e}")
+    print(f"\n❌ Error during execution: {e}")
+
+
+
+
+

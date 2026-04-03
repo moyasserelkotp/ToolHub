@@ -73,6 +73,7 @@ class ToolHub:
         self,
         base_url:    str = "http://localhost:3000",
         api_key:     Optional[str] = None,
+        token:       Optional[str] = None,
         operator_id: str = "default",
         agent_id:    Optional[str] = None,
         timeout:     int = 30,
@@ -90,6 +91,8 @@ class ToolHub:
         })
         if api_key:
             self._session.headers["X-API-Key"] = api_key
+        if token:
+            self._session.headers["Authorization"] = f"Bearer {token}"
 
         # token cache: tool_id → {"token": str, "expires_at": float}
         self._token_cache: Dict[str, dict] = {}
@@ -195,12 +198,43 @@ class ToolHub:
         
         try:
             resp    = self._session.post(url, json=params, timeout=self.timeout)
-            latency = int((time.time() - start) * 1000)
-            ok      = resp.status_code < 400
+            
+            # Handle HITL Pending Approvals
             try:
                 data = resp.json()
             except Exception:
                 data = resp.text
+
+            if resp.status_code == 202 and isinstance(data, dict) and data.get("status") == "pending_approval":
+                call_id = data["call_id"]
+                print(f"\n🛡️  [Human-in-the-Loop] Tool execution paused.")
+                print(f"⏳ Waiting for Administrator approval on ToolHub Dashboard (Call ID: {call_id})...")
+                
+                while True:
+                    time.sleep(3)
+                    status_resp = self._session.get(f"{self.base_url}/tools/calls/{call_id}/status")
+                    if status_resp.ok:
+                        current_status = status_resp.json().get("status")
+                        if current_status == "approved":
+                            print("✅ Execution Approved! Resuming agent...\n")
+                            # Resend with bypass token
+                            self._session.headers.update({"X-ToolHub-Bypass-Approval": call_id})
+                            try:
+                                resp = self._session.post(url, json=params, timeout=self.timeout)
+                                try:
+                                    data = resp.json()
+                                except Exception:
+                                    data = resp.text
+                            finally:
+                                del self._session.headers["X-ToolHub-Bypass-Approval"]
+                            break
+                        elif current_status == "rejected":
+                            print("❌ Execution Rejected by Administrator.")
+                            latency = int((time.time() - start) * 1000)
+                            return InvokeResult(tool_id=tool_id, tool_name=None, success=False, data=None, latency_ms=latency, error="Execution rejected by human administrator.")
+            
+            latency = int((time.time() - start) * 1000)
+            ok      = resp.status_code < 400
             
             return InvokeResult(
                 tool_id=tool_id, 
@@ -244,6 +278,19 @@ class ToolHub:
             func=_run,
         )
 
+    def _sanitize_openai_schema(self, schema: dict) -> dict:
+        """Recursive helper to ensure OpenAI-compatible schemas (e.g. arrays must have 'items')."""
+        if not isinstance(schema, dict):
+            return schema
+        res = schema.copy()
+        if res.get("type") == "array" and "items" not in res:
+            res["items"] = {"type": "string"}
+        if "properties" in res:
+            res["properties"] = {k: self._sanitize_openai_schema(v) for k, v in res["properties"].items()}
+        if "items" in res:
+            res["items"] = self._sanitize_openai_schema(res["items"])
+        return res
+
     def as_openai_function(self, tool_id: str) -> Dict:
         """
         Return a tool in OpenAI function-calling format.
@@ -259,7 +306,7 @@ class ToolHub:
         return {
             "name":        tool.name.replace("-", "_"),
             "description": tool.description,
-            "parameters":  tool.json_schema or {"type": "object", "properties": {}, "required": []},
+            "parameters":  self._sanitize_openai_schema(tool.json_schema or {"type": "object", "properties": {}, "required": []}),
             "_toolhub_id": tool.id,
         }
 

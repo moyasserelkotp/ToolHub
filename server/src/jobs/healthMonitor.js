@@ -6,7 +6,13 @@ const { fireWebhooks } = require('../services/webhooks');
 const FAIL_THRESHOLD = 3;
 
 async function checkTool(tool) {
-  if (!tool.endpoint_url) return { status: 'no_endpoint', response_ms: null, schema_valid: true };
+  if (!tool.endpoint_url) {
+    // Internal tools are executed server-side and don't have an external endpoint.
+    if (tool.category === 'internal') {
+      return { status: 'healthy', response_ms: null, schema_valid: true };
+    }
+    return { status: 'no_endpoint', response_ms: null, schema_valid: true };
+  }
 
   const start = Date.now();
   try {
@@ -36,6 +42,7 @@ async function runHealthChecks() {
   try {
     const { rows: tools } = await db.query(
       `SELECT t.id, t.name, t.endpoint_url, t.status,
+              t.category,
               COALESCE(ths.consecutive_fails, 0) AS consecutive_fails
        FROM tools t
        LEFT JOIN tool_health_summary ths ON ths.tool_id = t.id

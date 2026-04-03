@@ -8,7 +8,9 @@ const db                 = require('./db');
 const { loadEmbeddings } = require('./services/embeddings');
 const { startHealthMonitor } = require('./jobs/healthMonitor');
 const { analyticsMiddleware } = require('./middleware/analytics');
-const { requireApiKey, warnIfNoToken } = require('./middleware/auth');
+const { requireAuth, warnIfNoToken } = require('./middleware/auth');
+const logger = require('./logger');
+const pinoHttp = require('pino-http');
 
 const http = require('http');
 const { Server } = require('socket.io');
@@ -23,23 +25,39 @@ app.set('io', io);
 const PORT = process.env.PORT || 3000;
 
 // ── Middleware ────────────────────────────────────────────────────────────────
+app.use(pinoHttp({ logger }));
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
-app.use(morgan('dev'));
 app.use(rateLimit({ windowMs: 15 * 60 * 1000, max: 2000, standardHeaders: true }));
-app.use(requireApiKey);      // 🔐 guards write ops; GETs + /tools/search stay public
+app.use(requireAuth);        // 🔐 guards write ops; GETs + /tools/search stay public
 app.use(analyticsMiddleware);
 
 // ── Routes ────────────────────────────────────────────────────────────────────
-app.use('/tools',       require('./routes/tools'));
-app.use('/credentials', require('./routes/credentials'));
-app.use('/webhooks',    require('./routes/webhooks'));
-app.use('/analytics',   require('./routes/analytics'));
-app.use('/collections', require('./routes/collections'));
-app.use('/orgs',        require('./routes/orgs'));
-app.use('/audit',       require('./routes/audit'));
-app.use('/mcp',         require('./routes/mcp'));
-app.use('/marketplace', require('./routes/marketplace'));
+const authRouter        = require('./routes/auth');
+const toolsRouter       = require('./routes/tools');
+const credentialsRouter = require('./routes/credentials');
+const importRouter      = require('./routes/import');
+const webhooksRouter    = require('./routes/webhooks');
+const analyticsRouter   = require('./routes/analytics');
+const collectionsRouter = require('./routes/collections');
+const orgsRouter        = require('./routes/orgs');
+const auditRouter       = require('./routes/audit');
+const mcpRouter         = require('./routes/mcp');
+const marketplaceRouter = require('./routes/marketplace');
+const pipelinesRouter   = require('./routes/pipelines');
+
+app.use('/auth',        authRouter);
+app.use('/tools/import-openapi', importRouter);
+app.use('/tools',       toolsRouter);
+app.use('/credentials', credentialsRouter);
+app.use('/webhooks',    webhooksRouter);
+app.use('/analytics',   analyticsRouter);
+app.use('/collections', collectionsRouter);
+app.use('/orgs',        orgsRouter);
+app.use('/audit',       auditRouter);
+app.use('/mcp',         mcpRouter);
+app.use('/marketplace', marketplaceRouter);
+app.use('/pipelines',   pipelinesRouter);
 
 // ── Info & health ─────────────────────────────────────────────────────────────
 app.get('/health', (_, res) => res.json({ status: 'ok', version: '1.0.0', ts: new Date() }));
@@ -73,7 +91,7 @@ app.use((req, res) => res.status(404).json({ error: `${req.method} ${req.path} n
 
 // ── Error handler ─────────────────────────────────────────────────────────────
 app.use((err, req, res, next) => {
-  console.error(err.stack);
+  logger.error(err);
   res.status(500).json({ error: 'Internal server error', message: err.message });
 });
 
@@ -82,17 +100,17 @@ app.use((err, req, res, next) => {
   warnIfNoToken();
   try {
     await db.query('SELECT 1');
-    console.log('✅ Database connected');
+    logger.info('✅ Database connected');
   } catch (err) {
-    console.warn('⚠️  Database not reachable:', err.message);
-    console.warn('   createdb toolhub && npm run migrate && npm run seed');
+    logger.warn(`⚠️  Database not reachable: ${err.message}`);
+    logger.warn('   createdb toolhub && npm run migrate && npm run seed');
   }
 
   await loadEmbeddings().catch(() => {});
   startHealthMonitor();
 
   server.listen(PORT, () => {
-    console.log(`
+    logger.info(`
 ╔══════════════════════════════════════════════════╗
 ║  ⚙  ToolHub API  —  http://localhost:${PORT}       ║
 ║  📡 Socket.IO Real-Time engine active            ║

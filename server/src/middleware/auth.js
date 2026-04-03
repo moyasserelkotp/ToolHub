@@ -1,70 +1,56 @@
-/**
- * ToolHub API Authentication Middleware
- * =====================================
- * Guards write operations (POST/PUT/DELETE) with a Bearer token.
- * Read-only endpoints (GET) remain public so agents can discover tools freely.
- *
- * Set TOOLHUB_ADMIN_TOKEN in .env. If the env var is absent the server runs
- * in open/dev mode (a warning is logged on startup).
- *
- * Usage in index.js:
- *   const { requireApiKey, warnIfNoToken } = require('./middleware/auth');
- *   warnIfNoToken();                          // call once at startup
- *   app.use(requireApiKey);                   // applied globally — guards writes only
- */
+const jwt = require('jsonwebtoken');
 
-const ADMIN_TOKEN = process.env.TOOLHUB_ADMIN_TOKEN;
+const JWT_SECRET = process.env.JWT_SECRET || 'changeme_generate_a_real_secret_in_production';
 
-// READ-ONLY methods + paths that agents must reach without a key
-const PUBLIC_METHODS  = new Set(['GET', 'HEAD', 'OPTIONS']);
-const PUBLIC_PATHS    = new Set([
-  '/',
-  '/health',
-  '/tools/search',   // POST but intentionally public — discovery
-]);
+const PUBLIC_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+const PUBLIC_PATHS = new Set(['/', '/health']);
 
-/**
- * Express middleware.
- * - GET / HEAD / OPTIONS → always allowed
- * - POST /tools/search   → always allowed (semantic discovery)
- * - Anything else        → requires Authorization: Bearer <TOOLHUB_ADMIN_TOKEN>
- */
-function requireApiKey(req, res, next) {
-  // Pass through if no token is configured (dev mode)
-  if (!ADMIN_TOKEN) return next();
-
-  // Public methods are fine
+function requireAuth(req, res, next) {
+  // Public discovery
   if (PUBLIC_METHODS.has(req.method)) return next();
-
-  // Explicitly public write endpoints
   if (PUBLIC_PATHS.has(req.path)) return next();
-  // Also allow /tools/search even when called via full path
-  if (req.method === 'POST' && req.path === '/search') return next();
+  if (req.method === 'POST' && (req.path === '/search' || req.path === '/tools/search')) return next();
+  
+  // Public auth routes
+  if (req.path.startsWith('/auth')) return next();
 
-  // Extract Bearer token
-  const auth  = req.headers['authorization'] || '';
-  const token = auth.startsWith('Bearer ') ? auth.slice(7) : auth;
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ error: 'Unauthorized: Missing or invalid token format' });
+  }
 
-  if (token === ADMIN_TOKEN) return next();
+  const token = authHeader.split(' ')[1];
 
-  return res.status(401).json({
-    error:   'Unauthorized',
-    message: 'Provide a valid Bearer token in the Authorization header.',
-    hint:    'Set TOOLHUB_ADMIN_TOKEN in your .env and pass it as: Authorization: Bearer <token>',
-  });
-}
-
-/**
- * Log a startup warning when TOOLHUB_ADMIN_TOKEN is not set.
- * Call this once in index.js after loading dotenv.
- */
-function warnIfNoToken() {
-  if (!ADMIN_TOKEN) {
-    console.warn('⚠️  TOOLHUB_ADMIN_TOKEN is not set — API is running in OPEN mode.');
-    console.warn('   Set it in server/.env to protect write endpoints in production.');
-  } else {
-    console.log('🔐 API auth enabled — write endpoints require Bearer token.');
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    req.user = decoded;
+    next();
+  } catch (err) {
+    console.error('JWT verification failed:', err.message);
+    return res.status(401).json({ error: 'Unauthorized: Invalid token' });
   }
 }
 
-module.exports = { requireApiKey, warnIfNoToken };
+function requireRole(requiredRole) {
+  const roles = { admin: 3, editor: 2, viewer: 1 };
+  
+  return (req, res, next) => {
+    if (!req.user || !req.user.role) {
+      return res.status(403).json({ error: 'Forbidden: No role assigned' });
+    }
+    
+    const userLevel = roles[req.user.role] || 0;
+    const requiredLevel = roles[requiredRole] || 3;
+    
+    if (userLevel < requiredLevel) {
+      return res.status(403).json({ error: 'Forbidden: Insufficient permissions' });
+    }
+    
+    next();
+  };
+}
+
+// Keep a stub for compatibility if any other files look for it for now
+function warnIfNoToken() {}
+
+module.exports = { requireAuth, requireRole, warnIfNoToken };

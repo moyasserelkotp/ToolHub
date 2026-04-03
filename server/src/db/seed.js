@@ -8,8 +8,8 @@ const TOOLS = [
     name: 'web_search',
     description: 'Search the web for real-time information, news, articles and research results. Returns ranked results with titles, snippets, and URLs.',
     category: 'research',
-    auth_type: 'api_key',
-    endpoint_url: 'https://api.search.example.com/v1/search',
+    auth_type: 'none',
+    endpoint_url: null,
     version: '2.1.0',
     json_schema: {
       type: 'object', required: ['query'],
@@ -193,10 +193,110 @@ const TOOLS = [
       },
     },
   },
+
+  // ────────────────────────────────────────────────────────────────────────────
+  // Internal executable tools (real functionality, no endpoint_url required)
+  // ────────────────────────────────────────────────────────────────────────────
+  {
+    name: 'workspace_read_file',
+    description: 'Read a text file from the ToolHub workspace safely (prevents path traversal). Returns content (UTF-8) and size limits for safe agent usage.',
+    category: 'internal',
+    auth_type: 'none',
+    version: '2.0.0',
+    json_schema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'File path relative to the workspace root' },
+        max_bytes: { type: 'integer', default: 200000, maximum: 2000000, description: 'Maximum bytes to return' },
+      },
+      required: ['path'],
+    },
+  },
+  {
+    name: 'workspace_list_dir',
+    description: 'List directory contents from the ToolHub workspace with optional recursion. Filters noisy directories and enforces max_items to keep responses bounded.',
+    category: 'internal',
+    auth_type: 'none',
+    version: '2.0.0',
+    json_schema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', default: '.', description: 'Directory path relative to the workspace root' },
+        recursive: { type: 'boolean', default: false, description: 'Whether to recursively list subdirectories' },
+        max_items: { type: 'integer', default: 200, maximum: 5000, description: 'Maximum directory items to return' },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'workspace_search',
+    description: 'Search text inside the ToolHub workspace files using a safe in-process scanner (no external shell). Supports substring or regex matching with file size limits.',
+    category: 'internal',
+    auth_type: 'none',
+    version: '2.0.0',
+    json_schema: {
+      type: 'object',
+      properties: {
+        pattern: { type: 'string', description: 'Search string (or regex pattern when use_regex=true)' },
+        path: { type: 'string', default: '.', description: 'Base directory for the search (workspace-relative)' },
+        use_regex: { type: 'boolean', default: false, description: 'Treat pattern as regex when true' },
+        ignore_case: { type: 'boolean', default: true, description: 'Case-insensitive search' },
+        max_results: { type: 'integer', default: 20, maximum: 200, description: 'Maximum matches to return' },
+        max_file_bytes: { type: 'integer', default: 200000, maximum: 2000000, description: 'Skip files larger than this limit' },
+        max_files: { type: 'integer', default: 5000, maximum: 50000, description: 'Maximum number of files to scan' },
+      },
+      required: ['pattern'],
+    },
+  },
+  {
+    name: 'git_status',
+    description: 'Return concise Git status for the ToolHub workspace (porcelain format). Useful for agents that need to understand what changed before proposing edits.',
+    category: 'internal',
+    auth_type: 'none',
+    version: '2.0.0',
+    json_schema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', default: '.', description: 'Workspace subdirectory to run git in' },
+        max_chars: { type: 'integer', default: 20000, maximum: 200000, description: 'Maximum output characters' },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'git_diff',
+    description: 'Return a patch diff of the ToolHub workspace using Git. Supports optional path filtering and output truncation to keep responses manageable.',
+    category: 'internal',
+    auth_type: 'none',
+    version: '2.0.0',
+    json_schema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Optional workspace-relative path to limit the diff' },
+        max_chars: { type: 'integer', default: 20000, maximum: 200000, description: 'Maximum output characters' },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'wiki_search',
+    description: 'Search Wikipedia using the public MediaWiki API and return titles/snippets/URLs. Outbound HTTP is disabled by default for safety.',
+    category: 'internal',
+    auth_type: 'none',
+    version: '2.0.0',
+    json_schema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Wikipedia search query' },
+        limit: { type: 'integer', default: 5, maximum: 20, description: 'Number of results to return' },
+      },
+      required: ['query'],
+    },
+  },
 ];
 
 async function seed() {
-  console.log('🌱 Seeding ToolHub with 10 example tools…\n');
+  console.log('🌱 Seeding ToolHub with 16 example tools…\n');
 
   for (const t of TOOLS) {
     const score = computeSecurityScore(t);

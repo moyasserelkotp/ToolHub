@@ -4,7 +4,7 @@
  */
 const db = require('../db');
 
-const PROVIDER = process.env.EMBEDDING_PROVIDER || 'tfidf';
+const PROVIDER = process.env.EMBEDDING_PROVIDER || 'local';
 
 // ── TF-IDF Strategy ──────────────────────────────────────────────────────────
 const VOCAB = [
@@ -44,6 +44,7 @@ function computeTfidfEmbedding(text) {
 
 let transformersPipeline;
 let openaiClient;
+let geminiClient;
 
 async function computeEmbedding(text) {
   if (PROVIDER === 'local') {
@@ -62,6 +63,15 @@ async function computeEmbedding(text) {
     }
     const res = await openaiClient.embeddings.create({ model: 'text-embedding-3-small', input: text });
     return res.data[0].embedding;
+  } else if (PROVIDER === 'gemini') {
+    if (!geminiClient) {
+      const { GoogleGenerativeAI } = require('@google/generative-ai');
+      if (!process.env.GEMINI_API_KEY) throw new Error('GEMINI_API_KEY missing');
+      geminiClient = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+    }
+    const model = geminiClient.getGenerativeModel({ model: 'text-embedding-004' });
+    const result = await model.embedContent(text);
+    return result.embedding.values;
   }
   
   // Default to tfidf
@@ -76,14 +86,13 @@ function cosineSimilarity(a, b) {
   return denom > 0 ? dot / denom : 0;
 }
 
-// In-memory cache: toolId → Array of floats
-const cache = new Map();
+const cache = require('./cache');
 
 async function loadEmbeddings() {
   try {
     const { rows } = await db.query('SELECT tool_id, embedding FROM tool_embeddings');
-    rows.forEach(r => cache.set(r.tool_id, r.embedding));
-    console.log(`📐 Loaded ${rows.length} embeddings into memory (Provider: ${PROVIDER})`);
+    await Promise.all(rows.map(r => cache.set(`toolhub:emb:${r.tool_id}`, r.embedding)));
+    console.log(`📐 Loaded ${rows.length} embeddings into cache (Provider: ${PROVIDER})`);
   } catch (err) {
     console.warn('Could not load embeddings:', err.message);
   }
@@ -91,7 +100,7 @@ async function loadEmbeddings() {
 
 async function embedTool(toolId, text) {
   const embedding = await computeEmbedding(text);
-  cache.set(toolId, embedding);
+  await cache.set(`toolhub:emb:${toolId}`, embedding);
   try {
     await db.query(
       `INSERT INTO tool_embeddings (tool_id, embedding, embedded_text)
@@ -107,10 +116,10 @@ async function embedTool(toolId, text) {
 
 async function _scoreTools(rows, qVec) {
   const scored = await Promise.all(rows.map(async tool => {
-    let emb = tool.embedding || cache.get(tool.id);
+    let emb = tool.embedding || await cache.get(`toolhub:emb:${tool.id}`);
     if (!emb) {
       emb = await computeEmbedding(`${tool.name} ${tool.description}`);
-      cache.set(tool.id, emb);
+      await cache.set(`toolhub:emb:${tool.id}`, emb);
     }
     const sem   = cosineSimilarity(qVec, emb);
     const sec   = (tool.security_score || 0) / 100;
@@ -145,17 +154,17 @@ async function semanticSearch(query, topK = 5) {
  * Get related tools using the specified tool's embedding
  */
 async function getRelatedTools(toolId, topK = 5) {
-  let qVec = cache.get(toolId);
+  let qVec = await cache.get(`toolhub:emb:${toolId}`);
   if (!qVec) {
     const { rows } = await db.query('SELECT embedding FROM tool_embeddings WHERE tool_id = $1', [toolId]);
     if (rows.length > 0 && rows[0].embedding) {
       qVec = rows[0].embedding;
-      cache.set(toolId, qVec);
+      await cache.set(`toolhub:emb:${toolId}`, qVec);
     } else {
       const { rows: toolRows } = await db.query('SELECT name, description FROM tools WHERE id = $1', [toolId]);
       if (toolRows.length === 0) return [];
       qVec = await computeEmbedding(`${toolRows[0].name} ${toolRows[0].description}`);
-      cache.set(toolId, qVec);
+      await cache.set(`toolhub:emb:${toolId}`, qVec);
     }
   }
 

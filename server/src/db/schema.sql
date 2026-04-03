@@ -13,9 +13,18 @@ CREATE TABLE IF NOT EXISTS organizations (
   created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS users (
+  id             UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
+  username       VARCHAR(100) NOT NULL UNIQUE,
+  password_hash  TEXT         NOT NULL,
+  role           VARCHAR(20)  NOT NULL DEFAULT 'editor' CHECK (role IN ('admin','editor','viewer')),
+  org_id         UUID         REFERENCES organizations(id) ON DELETE SET NULL,
+  created_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS org_members (
   org_id      UUID        NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
-  user_id     VARCHAR(100) NOT NULL,
+  user_id     UUID        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   role        VARCHAR(20) NOT NULL DEFAULT 'viewer' CHECK (role IN ('admin','editor','viewer')),
   created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   PRIMARY KEY (org_id, user_id)
@@ -108,6 +117,17 @@ CREATE TABLE IF NOT EXISTS tool_calls (
   timestamp     TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- ── ─────────────────────────────────────────────
+-- TOOL AUDIT LOGS (AI & Manual Audits)
+-- ─────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS tool_audit_logs (
+  id            UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
+  tool_id       UUID        NOT NULL REFERENCES tools(id) ON DELETE CASCADE,
+  action        VARCHAR(100) NOT NULL,
+  details       JSONB,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 -- ─────────────────────────────────────────────
 -- TOOL HEALTH  (per-check log)
 -- ─────────────────────────────────────────────
@@ -165,7 +185,7 @@ CREATE TABLE IF NOT EXISTS tool_collections (
   id          UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
   name        VARCHAR(100) NOT NULL UNIQUE,
   description TEXT,
-  created_by  VARCHAR(100),
+  created_by  UUID        REFERENCES users(id),
   created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -178,6 +198,30 @@ CREATE TABLE IF NOT EXISTS collection_tools (
   tool_id       UUID NOT NULL REFERENCES tools(id) ON DELETE CASCADE,
   added_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   PRIMARY KEY (collection_id, tool_id)
+);
+
+-- ─────────────────────────────────────────────
+-- PIPELINES (New Feature)
+-- ─────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS pipelines (
+  id          UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
+  name        VARCHAR(100) NOT NULL,
+  steps       JSONB       NOT NULL,   -- array of {tool_id, args_template, name}
+  org_id      UUID        REFERENCES organizations(id) ON DELETE CASCADE,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- ─────────────────────────────────────────────
+-- TOOL RATINGS
+-- ─────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS tool_ratings (
+  id          UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
+  tool_id     UUID        NOT NULL REFERENCES tools(id) ON DELETE CASCADE,
+  user_id     UUID        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  rating      SMALLINT    CHECK (rating BETWEEN 1 AND 5),
+  review      TEXT,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (tool_id, user_id)
 );
 
 -- ─────────────────────────────────────────────
