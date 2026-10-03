@@ -5,7 +5,9 @@ const morgan     = require('morgan');
 const rateLimit  = require('express-rate-limit');
 
 const db                 = require('./db');
-const { loadEmbeddings } = require('./services/embeddings');
+const { loadEmbeddings }         = require('./services/embeddings');
+const { loadSkillEmbeddings }    = require('./services/skillEmbeddings');
+const { indexSkillsFromDirs }    = require('./services/skillsIndexer');
 const { startHealthMonitor } = require('./jobs/healthMonitor');
 const { analyticsMiddleware } = require('./middleware/analytics');
 const { requireAuth, warnIfNoToken } = require('./middleware/auth');
@@ -45,6 +47,7 @@ const auditRouter       = require('./routes/audit');
 const mcpRouter         = require('./routes/mcp');
 const marketplaceRouter = require('./routes/marketplace');
 const pipelinesRouter   = require('./routes/pipelines');
+const skillsRouter      = require('./routes/skills');
 
 app.use('/auth',        authRouter);
 app.use('/tools/import-openapi', importRouter);
@@ -58,6 +61,7 @@ app.use('/audit',       auditRouter);
 app.use('/mcp',         mcpRouter);
 app.use('/marketplace', marketplaceRouter);
 app.use('/pipelines',   pipelinesRouter);
+app.use('/skills',      skillsRouter);
 
 // ── Info & health ─────────────────────────────────────────────────────────────
 app.get('/health', (_, res) => res.json({ status: 'ok', version: '1.0.0', ts: new Date() }));
@@ -83,6 +87,12 @@ app.get('/', (_, res) => res.json({
     'GET    /analytics/overview':       'Dashboard: top tools, live feed, error heatmap',
     'GET    /analytics/tools/:id':      'Per-tool: calls, p95 latency, error rate, 30-day trend',
     'GET    /analytics/agent/:id':      'Per-agent: tool usage breakdown',
+    'GET    /skills':                   'List skills — ?status=&tags=&is_builtin=&limit=&offset=',
+    'GET    /skills/:id':               'Full skill details + raw content + frontmatter',
+    'GET    /skills/slug/:slug':        'Get skill by folder slug',
+    'POST   /skills/search':            'Semantic search skills — { query, limit }',
+    'GET    /skills/:id/related':       'Related skills by embedding similarity',
+    'POST   /skills/index':             'Trigger re-index from SKILLS_DIRS (auth required)',
   },
 }));
 
@@ -107,6 +117,16 @@ app.use((err, req, res, next) => {
   }
 
   await loadEmbeddings().catch(() => {});
+  await loadSkillEmbeddings().catch(() => {});
+
+  // Auto-index skills from configured directories
+  const SKILLS_DIRS = (process.env.SKILLS_DIRS || '').split(';').filter(Boolean);
+  if (SKILLS_DIRS.length > 0) {
+    logger.info(`🧠 Indexing skills from ${SKILLS_DIRS.length} director${SKILLS_DIRS.length === 1 ? 'y' : 'ies'}…`);
+    await indexSkillsFromDirs(SKILLS_DIRS, { isBuiltin: true }).catch(err =>
+      logger.warn(`Skills auto-indexing skipped: ${err.message}`)
+    );
+  }
   startHealthMonitor();
 
   server.listen(PORT, () => {

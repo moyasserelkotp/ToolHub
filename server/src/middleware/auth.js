@@ -9,7 +9,11 @@ function requireAuth(req, res, next) {
   // Public discovery
   if (PUBLIC_METHODS.has(req.method)) return next();
   if (PUBLIC_PATHS.has(req.path)) return next();
-  if (req.method === 'POST' && (req.path === '/search' || req.path === '/tools/search')) return next();
+  if (req.method === 'POST' && (
+    req.path === '/search' ||
+    req.path === '/tools/search' ||
+    req.path === '/skills/search'
+  )) return next();
   
   // Public auth routes
   if (req.path.startsWith('/auth')) return next();

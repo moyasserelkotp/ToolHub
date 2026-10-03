@@ -3,6 +3,7 @@ import { io } from "socket.io-client";
 import { Card, ScoreBadge, Pill, Feed, Box, Section, Pre, Mono, Note, secColor, RegisterToolModal } from "./components/ui";
 import { HourlyVolumeChart, SecurityDistributionChart } from "./components/AnalyticsCharts";
 import Marketplace from "./pages/Marketplace";
+import Skills from "./pages/Skills";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 // Set VITE_API_URL in .env to override for non-localhost deployments
@@ -131,7 +132,7 @@ export default function App() {
     : "0.0";
   const uniqueAgents = [...new Set((calls || []).map(c => c.agent_id).filter(Boolean))].length;
   const successCalls = (calls || []).filter(c => c.success).length;
-  const TABS = ["overview", "approvals", "marketplace", "tools", "security", "calls", "how to use"];
+  const TABS = ["overview", "approvals", "marketplace", "skills", "tools", "security", "calls", "how to use"];
 
 
   return (
@@ -258,6 +259,9 @@ export default function App() {
 
         {/* ── MARKETPLACE ── */}
         {tab==="marketplace" && <Marketplace />}
+
+        {/* ── SKILLS ── */}
+        {tab==="skills" && <Skills />}
 
         {/* ── TOOLS ── */}
         {tab==="tools" && (

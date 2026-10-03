@@ -146,4 +146,180 @@ program
     });
   });
 
+// ── Skills commands ───────────────────────────────────────────────────────────
+
+const skills = program.command('skills').description('Manage and search agent skills');
+
+skills
+  .command('search <query>')
+  .description('Semantic search for agent skills')
+  .option('-n, --limit <n>', 'Max results', '5')
+  .action(async (query: string, options) => {
+    const opts = program.opts();
+    const serverUrl = opts.url || process.env.TOOLHUB_URL || 'http://localhost:3000';
+    const spinner = ora(`Searching skills for: "${query}"...`).start();
+
+    try {
+      const res = await axios.post(
+        `${serverUrl}/skills/search`,
+        { query, limit: parseInt(options.limit) || 5 }
+      );
+      spinner.stop();
+
+      const results: any[] = res.data.results || [];
+      if (results.length === 0) {
+        console.log(chalk.yellow('\n📭 No matching skills found.\n'));
+        return;
+      }
+
+      console.log(chalk.bold.blue(`\n🧠 Skills matching: "${query}"\n`));
+      const table = new Table({
+        head: [
+          chalk.cyan('Name / Slug'),
+          chalk.cyan('Tags'),
+          chalk.cyan('Match %'),
+          chalk.cyan('Uses'),
+          chalk.cyan('Built-in'),
+        ],
+        style: { compact: true },
+      });
+
+      results.forEach((s: any) => {
+        table.push([
+          `${chalk.bold(s.name)}\n${chalk.dim('/' + s.slug)}`,
+          (s.tags || []).slice(0, 3).join(', ') || chalk.dim('—'),
+          s.semantic_score ? (s.semantic_score * 100).toFixed(1) + '%' : '—',
+          s.usage_count?.toString() || '0',
+          s.is_builtin ? chalk.green('✓') : chalk.dim('—'),
+        ]);
+      });
+
+      console.log(table.toString());
+      console.log();
+    } catch (err: any) {
+      spinner.fail('Search failed');
+      console.error(chalk.red(err.response?.data?.error || err.message));
+    }
+  });
+
+skills
+  .command('list')
+  .description('List all indexed skills')
+  .option('--tags <tags>', 'Comma-separated tag filter')
+  .option('--builtin', 'Show only built-in skills', false)
+  .option('-n, --limit <n>', 'Max results', '50')
+  .action(async (options) => {
+    const opts = program.opts();
+    const serverUrl = opts.url || process.env.TOOLHUB_URL || 'http://localhost:3000';
+    const spinner = ora('Fetching skills...').start();
+
+    try {
+      const params: any = { limit: parseInt(options.limit) || 50, status: 'active' };
+      if (options.tags)    params.tags       = options.tags;
+      if (options.builtin) params.is_builtin = 'true';
+
+      const res = await axios.get(`${serverUrl}/skills`, { params });
+      spinner.stop();
+
+      const list: any[]  = res.data.skills || [];
+      const total: number = res.data.total  || 0;
+
+      if (list.length === 0) {
+        console.log(chalk.yellow('\n📭 No skills found. Run: toolhub skills index\n'));
+        return;
+      }
+
+      console.log(chalk.bold.blue(`\n🧠 Skills Registry`) + chalk.dim(` — ${total} total\n`));
+      const table = new Table({
+        head: [chalk.cyan('Name'), chalk.cyan('Slug'), chalk.cyan('Tags'), chalk.cyan('Uses'), chalk.cyan('Built-in')],
+        style: { compact: true },
+      });
+
+      list.forEach((s: any) => {
+        table.push([
+          chalk.bold(s.name),
+          chalk.dim('/' + s.slug),
+          (s.tags || []).slice(0, 3).join(', ') || chalk.dim('—'),
+          s.usage_count?.toString() || '0',
+          s.is_builtin ? chalk.green('✓') : '',
+        ]);
+      });
+
+      console.log(table.toString());
+      console.log(chalk.dim(`  Showing ${list.length} of ${total} skills\n`));
+    } catch (err: any) {
+      spinner.fail('Failed to list skills');
+      console.error(chalk.red(err.response?.data?.error || err.message));
+    }
+  });
+
+skills
+  .command('get <slug>')
+  .description('Show details of a specific skill by slug')
+  .action(async (slug: string) => {
+    const opts = program.opts();
+    const serverUrl = opts.url || process.env.TOOLHUB_URL || 'http://localhost:3000';
+
+    try {
+      const res = await axios.get(`${serverUrl}/skills/slug/${slug}`);
+      const s   = res.data;
+
+      console.log(chalk.bold.blue(`\n🧠 ${s.name}`) + chalk.dim(` v${s.version || '1.0.0'}`));
+      console.log(chalk.cyan('ID:          ') + s.id);
+      console.log(chalk.cyan('Slug:        ') + `/${s.slug}`);
+      console.log(chalk.cyan('Author:      ') + (s.author || chalk.dim('—')));
+      console.log(chalk.cyan('Status:      ') + (s.status === 'active' ? chalk.green(s.status) : chalk.yellow(s.status)));
+      console.log(chalk.cyan('Built-in:    ') + (s.is_builtin ? chalk.green('Yes') : 'No'));
+      console.log(chalk.cyan('Usage count: ') + s.usage_count);
+      if (s.tags?.length > 0) {
+        console.log(chalk.cyan('Tags:        ') + s.tags.join(', '));
+      }
+      console.log(chalk.cyan('Source:      ') + (s.source_path || chalk.dim('—')));
+      console.log(`\n${chalk.italic(s.description)}\n`);
+
+      if (s.raw_content) {
+        console.log(chalk.bold('── SKILL.md Preview ──────────────────────────'));
+        console.log(chalk.dim(s.raw_content.slice(0, 600)));
+        if (s.raw_content.length > 600) console.log(chalk.dim('  … (truncated)'));
+        console.log();
+      }
+    } catch (err: any) {
+      if (err.response?.status === 404) {
+        console.error(chalk.red(`\n❌ Skill '${slug}' not found`));
+      } else {
+        console.error(chalk.red('\n❌ Error:'), err.response?.data?.error || err.message);
+      }
+    }
+  });
+
+skills
+  .command('index')
+  .description('Trigger re-indexing of SKILLS_DIRS on the server (admin)')
+  .action(async () => {
+    const opts = program.opts();
+    const serverUrl = opts.url || process.env.TOOLHUB_URL || 'http://localhost:3000';
+    const spinner = ora('Triggering skills re-index on server...').start();
+
+    try {
+      const res = await axios.post(
+        `${serverUrl}/skills/index`,
+        {},
+        { headers: { Authorization: `Bearer ${opts.token}` } }
+      );
+      spinner.succeed('Re-indexing started!');
+      console.log(chalk.green(`\n✅ ${res.data.message}`));
+      if (res.data.dirs?.length > 0) {
+        console.log(chalk.dim('   Dirs: ' + res.data.dirs.join('\n         ')));
+      }
+      console.log();
+    } catch (err: any) {
+      spinner.fail('Re-index failed');
+      if (err.response?.status === 401) {
+        console.error(chalk.red('❌ Unauthorized — pass --token <admin_token>'));
+      } else {
+        console.error(chalk.red(err.response?.data?.error || err.message));
+      }
+    }
+  });
+
 program.parse(process.argv);

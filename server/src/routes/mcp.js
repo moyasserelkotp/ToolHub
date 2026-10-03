@@ -7,6 +7,7 @@ const db = require('../db');
 const axios = require('axios');
 const { decrypt } = require('../services/security');
 const { invokeInternalTool } = require('../services/internalTools');
+const { skillSemanticSearch } = require('../services/skillEmbeddings');
 
 // MCP Server initialization
 const mcpServer = new Server({ name: 'toolhub-mcp', version: '2.0.0' }, { capabilities: { tools: {} } });
@@ -17,18 +18,45 @@ let transport;
 // ── MCP List Tools ───────────────────────────────────────────────────────────
 mcpServer.setRequestHandler(ListToolsRequestSchema, async () => {
   try {
-    const { rows } = await db.query(
-      `SELECT name, description, json_schema FROM tools 
-       WHERE status = 'active' AND is_public = true LIMIT 100`
-    );
+    const [toolsRes, skillsRes] = await Promise.all([
+      db.query(
+        `SELECT name, description, json_schema FROM tools
+         WHERE status = 'active' AND is_public = true LIMIT 100`
+      ),
+      db.query(
+        `SELECT name, slug, description, tags FROM skills
+         WHERE status = 'active' LIMIT 100`
+      ),
+    ]);
 
-    return {
-       tools: rows.map(t => ({
-         name: t.name,
-         description: t.description,
-         inputSchema: t.json_schema || { type: 'object', properties: {} }
-       }))
-    };
+    const toolEntries = toolsRes.rows.map(t => ({
+      name: t.name,
+      description: t.description,
+      inputSchema: t.json_schema || { type: 'object', properties: {} },
+    }));
+
+    // Add skills as callable entries (type hint in description)
+    const skillEntries = skillsRes.rows.map(s => ({
+      name: `skill:${s.slug}`,
+      description: `[SKILL] ${s.description}`,
+      inputSchema: { type: 'object', properties: {}, 'x-type': 'skill', 'x-slug': s.slug },
+    }));
+
+    // Add the skills_search meta-tool
+    const metaTools = [{
+      name: 'skills_search',
+      description: 'Semantically search agent skills from the ToolHub Skills Registry',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'Natural language query describing the skill needed' },
+          limit: { type: 'number', description: 'Max results (default 5, max 20)', default: 5 },
+        },
+        required: ['query'],
+      },
+    }];
+
+    return { tools: [...toolEntries, ...skillEntries, ...metaTools] };
   } catch (err) {
     console.error('MCP ListTools Error:', err);
     throw new McpError(ErrorCode.InternalError, 'Failed to fetch tools from ToolHub');
@@ -38,7 +66,24 @@ mcpServer.setRequestHandler(ListToolsRequestSchema, async () => {
 // ── MCP Call Tool ────────────────────────────────────────────────────────────
 mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
-  
+
+  // ── skills_search meta-tool ──────────────────────────────────────────────
+  if (name === 'skills_search') {
+    const { query, limit = 5 } = args;
+    if (!query) throw new McpError(ErrorCode.InvalidParams, 'query is required');
+    try {
+      const results = await skillSemanticSearch(query, Math.min(parseInt(limit) || 5, 20));
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({ query, count: results.length, results }, null, 2),
+        }],
+      };
+    } catch (err) {
+      return { content: [{ type: 'text', text: `Skills search error: ${err.message}` }], isError: true };
+    }
+  }
+
   try {
     const { rows: toolRows } = await db.query(`SELECT id, endpoint_url, auth_type FROM tools WHERE name = $1 AND status = 'active'`, [name]);
     if (!toolRows[0]) throw new McpError(ErrorCode.MethodNotFound, `Tool not found: ${name}`);

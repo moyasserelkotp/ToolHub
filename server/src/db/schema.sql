@@ -65,6 +65,7 @@ CREATE TABLE IF NOT EXISTS tools (
                               CHECK (status IN ('active','degraded','deprecated')),
   org_id         UUID         REFERENCES organizations(id) ON DELETE CASCADE,
   is_public      BOOLEAN      NOT NULL DEFAULT true,
+  requires_approval BOOLEAN      NOT NULL DEFAULT false,
   created_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
   updated_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
@@ -72,6 +73,7 @@ CREATE TABLE IF NOT EXISTS tools (
 -- Ensure existing tool tables get the new columns
 ALTER TABLE tools ADD COLUMN IF NOT EXISTS org_id UUID REFERENCES organizations(id) ON DELETE CASCADE;
 ALTER TABLE tools ADD COLUMN IF NOT EXISTS is_public BOOLEAN NOT NULL DEFAULT true;
+ALTER TABLE tools ADD COLUMN IF NOT EXISTS requires_approval BOOLEAN NOT NULL DEFAULT false;
 
 -- ─────────────────────────────────────────────
 -- TOOL VERSIONS  (schema history)
