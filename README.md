@@ -1,5 +1,5 @@
 <div align="center">
-  <h1>⚙️ ToolHub v2.0</h1>
+  <h1>⚙️ ToolHub v3.0</h1>
   <p><b>The Universal AI Tool Discovery & Execution Platform</b></p>
   <p>Zero-configuration tool bridging for LLM APIs (Gemini, OpenAI, Anthropic, LangChain), featuring secure server-side credential injection, real-time observability, and enterprise multi-tenancy.</p>
 </div>
